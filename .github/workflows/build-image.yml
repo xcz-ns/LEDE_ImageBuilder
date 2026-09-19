@@ -1,0 +1,439 @@
+name: OpenWrt 固件构建
+run-name: 编译固件 [ ${{ inputs.selected_device }} ]
+
+on:
+  workflow_dispatch:
+    inputs:
+      selected_device:
+        description: '请选择要构建的设备'
+        required: true
+        default: 'LEDE_Cudy'
+        type: choice
+        # 注意：选项需与 set-matrix 中的设备参数表保持一致
+        options:
+          - 'LEDE_Cudy'
+          - 'LEDE_R3S'
+          - 'LEDE_x86'
+
+# 同一设备串行构建：避免同分钟重跑导致 Release tag 冲突或误删
+concurrency:
+  group: build-${{ inputs.selected_device }}
+  cancel-in-progress: false
+
+jobs:
+
+  # ============================================================
+  # 初始化构建参数
+  # ============================================================
+  set-matrix:
+    name: 初始化构建参数
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.generate-matrix.outputs.matrix }}
+    steps:
+      - name: ⚙️ 生成设备构建参数
+        id: generate-matrix
+        run: |
+          DEVICE="${{ inputs.selected_device }}"
+
+          # 设备构建参数表（注意：需与上方 workflow_dispatch 的 options 保持一致）
+          DEVICE_CONFIG='[
+            {
+              "device": "LEDE_Cudy",
+              "target": "mediatek",
+              "subtarget": "filogic",
+              "profile": "cudy_tr3000-mod"
+            },
+            {
+              "device": "LEDE_R3S",
+              "target": "rockchip",
+              "subtarget": "armv8",
+              "profile": "friendlyarm_nanopi-r3s"
+            },
+            {
+              "device": "LEDE_x86",
+              "target": "x86",
+              "subtarget": "64",
+              "profile": "generic"
+            }
+          ]'
+
+          MATRIX=$(
+            echo "$DEVICE_CONFIG" \
+              | jq -c --arg device "$DEVICE" \
+                '[.[] | select(.device == $device)]'
+          )
+
+          if [ "$(echo "$MATRIX" | jq 'length')" -eq 0 ]; then
+            echo "错误：$DEVICE 不在设备参数表中，请检查 set-matrix 的 DEVICE_CONFIG。"
+            exit 1
+          fi
+
+          echo "matrix={\"include\":$MATRIX}" >> "$GITHUB_OUTPUT"
+
+  # ============================================================
+  # 固件构建
+  # ============================================================
+  build:
+    name: 构建并发布 [ ${{ matrix.device }} ]
+    needs: set-matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.set-matrix.outputs.matrix) }}
+    steps:
+      - name: 📥 检出代码仓库
+        uses: actions/checkout@v6
+
+      - name: 🔧 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libncurses-dev \
+            zlib1g-dev \
+            gawk \
+            gettext \
+            libssl-dev \
+            xsltproc \
+            rsync \
+            qemu-utils \
+            unzip
+
+      - name: ⬇️ 下载 ImageBuilder
+        env:
+          DEVICE: ${{ matrix.device }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "========================================"
+          echo "设备：$DEVICE"
+          echo "正在查找最新 ImageBuilder..."
+          echo "========================================"
+
+          # 按 tag 命名约定「...-$DEVICE」精确匹配，避免子串误匹配
+          TAG_NAME=$(
+            gh release list \
+              --repo xcz-ns/LEDE \
+              --limit 100 \
+              --json tagName \
+              -q '.[].tagName' \
+              | grep -E "(^|-)${DEVICE}$" \
+              | head -n 1
+          )
+
+          if [ -z "$TAG_NAME" ]; then
+            echo "错误：未找到 $DEVICE 对应的 Release。"
+            exit 1
+          fi
+
+          echo "Release：$TAG_NAME"
+          echo "开始下载 ImageBuilder..."
+
+          gh release download "$TAG_NAME" \
+            --repo xcz-ns/LEDE \
+            --pattern 'openwrt-imagebuilder*.tar.xz' \
+            --dir .
+
+          BUILDER_ARCHIVE=$(ls openwrt-imagebuilder*.tar.xz 2>/dev/null | head -n 1)
+
+          if [ -z "$BUILDER_ARCHIVE" ]; then
+            echo "错误：Release $TAG_NAME 中未找到 ImageBuilder。"
+            exit 1
+          fi
+
+          mv "$BUILDER_ARCHIVE" imagebuilder.tar.xz
+          echo "ImageBuilder 下载完成，文件大小：$(du -h imagebuilder.tar.xz | cut -f1)"
+
+          echo "正在解压 ImageBuilder..."
+          mkdir -p builder
+          tar -xJf imagebuilder.tar.xz \
+            -C builder \
+            --strip-components=1
+
+          echo "ImageBuilder 准备完成。"
+
+      - name: 📂 加载设备配置与自定义软件包
+        env:
+          DEVICE: ${{ matrix.device }}
+        run: |
+          cd builder
+          echo "正在加载 $DEVICE 自定义配置..."
+
+          # 加载本地软件包
+          if [ -d "../$DEVICE/packages" ]; then
+            cp -r ../"$DEVICE"/packages/* packages/ 2>/dev/null || true
+            echo "已加载本地软件包。"
+          else
+            echo "未检测到自定义软件包目录。"
+          fi
+
+          # 读取自定义软件包列表
+          PACKAGE_LIST=""
+          if [ -f "../$DEVICE/packages.txt" ]; then
+            PACKAGE_LIST=$(
+              sed 's/\r//g' "../$DEVICE/packages.txt" \
+                | grep -v '^#' \
+                | grep -v '^$' \
+                | tr '\n' ' '
+            )
+          fi
+
+          # 加载自定义文件
+          FILES_ARGUMENT=""
+          if [ -d "../$DEVICE/files" ]; then
+            FILES_ARGUMENT="FILES=../$DEVICE/files"
+            echo "已加载自定义 files 目录。"
+          fi
+
+          echo "PACKAGE_LIST=$PACKAGE_LIST" >> "$GITHUB_ENV"
+          echo "FILES_ARGUMENT=$FILES_ARGUMENT" >> "$GITHUB_ENV"
+
+          # 运行自定义脚本
+          if [ -f "../$DEVICE/custom.sh" ]; then
+            echo "正在运行自定义脚本..."
+            sed 's/\r$//' "../$DEVICE/custom.sh" | bash
+            echo "自定义脚本执行完成。"
+          fi
+
+      - name: 🧩 整理软件包列表
+        env:
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          cd builder
+          echo "========================================"
+          echo "整理 ImageBuilder 软件包"
+          echo "Profile：$PROFILE"
+          echo "========================================"
+
+          # ----------------------------------------------------
+          # 处理软件包签名校验
+          # ----------------------------------------------------
+          echo "正在调整软件包签名校验..."
+
+          # 尝试生成索引（失败可容忍：随后会创建空的签名文件）
+          make package_index >/dev/null 2>&1 || true
+
+          if [ ! -f "packages/Packages.sig" ]; then
+            touch packages/Packages.sig
+            echo "已创建空的 Packages.sig。"
+          fi
+
+          # 关闭签名校验（配置文件缺失或修改失败时直接报错）
+          sed -i \
+            's/option check_signature/option dummy_signature/g' \
+            repositories.conf
+
+          # ----------------------------------------------------
+          # 获取 Profile 默认软件包
+          # ----------------------------------------------------
+          echo "正在读取 Profile 默认软件包..."
+
+          DEFAULT_PACKAGES=$(
+            make info PROFILE="$PROFILE" \
+              | grep -E "^(Default Packages|Packages):" \
+              | sed -E 's/^(Default Packages|Packages)://' \
+              | tr -s ' ' '\n' \
+              | sort -u
+          )
+
+          DEFAULT_PACKAGE_COUNT=$(echo "$DEFAULT_PACKAGES" | grep -c . || true)
+          echo "Profile 默认软件包数量：$DEFAULT_PACKAGE_COUNT"
+
+          # ----------------------------------------------------
+          # 获取本地软件包
+          # ----------------------------------------------------
+          echo "正在读取本地软件包..."
+
+          LOCAL_PACKAGES=$(
+            find packages/ \
+              -name "Packages" \
+              -type f \
+              -print0 \
+              | xargs -0 grep "^Package:" 2>/dev/null \
+              | awk '{print $2}' \
+              | sort -u
+          )
+
+          # 如果没有 Packages 索引，则从 IPK 文件名获取
+          if [ -z "$LOCAL_PACKAGES" ]; then
+            echo "未找到 Packages 索引，改为读取 IPK 文件名..."
+            LOCAL_PACKAGES=$(
+              find packages/ \
+                -name "*.ipk" \
+                -type f \
+                | xargs -n 1 basename \
+                | sed -E 's/_[0-9].*\.ipk$//' \
+                | sed -E 's/\.ipk$//' \
+                | sort -u
+            )
+          fi
+
+          LOCAL_PACKAGE_COUNT=$(echo "$LOCAL_PACKAGES" | grep -c . || true)
+          echo "本地软件包数量：$LOCAL_PACKAGE_COUNT"
+
+          # ----------------------------------------------------
+          # 筛选 Profile 已包含的软件包
+          # ----------------------------------------------------
+          echo "正在筛选已包含的软件包..."
+
+          INCLUDED_LOCAL_PACKAGES=$(
+            comm -12 \
+              <(echo "$DEFAULT_PACKAGES") \
+              <(echo "$LOCAL_PACKAGES")
+          )
+
+          INCLUDED_PACKAGE_COUNT=$(echo "$INCLUDED_LOCAL_PACKAGES" | grep -c . || true)
+          echo "Profile 已包含的本地软件包：$INCLUDED_PACKAGE_COUNT"
+
+          # ----------------------------------------------------
+          # 获取需要额外加入镜像的软件包
+          # ----------------------------------------------------
+          echo "正在计算额外软件包..."
+
+          ADDITIONAL_PACKAGES=$(
+            comm -23 \
+              <(echo "$LOCAL_PACKAGES") \
+              <(echo "$INCLUDED_LOCAL_PACKAGES")
+          )
+
+          ADDITIONAL_PACKAGE_COUNT=$(echo "$ADDITIONAL_PACKAGES" | grep -c . || true)
+          echo "需要额外加入的软件包：$ADDITIONAL_PACKAGE_COUNT"
+
+          # ----------------------------------------------------
+          # 合并用户指定的软件包
+          # ----------------------------------------------------
+          CUSTOM_PACKAGES="${PACKAGE_LIST:-}"
+          ADDITIONAL_PACKAGE_LINE=$(echo "$ADDITIONAL_PACKAGES" | tr '\n' ' ' | tr -s ' ')
+          FINAL_PACKAGES="$ADDITIONAL_PACKAGE_LINE $CUSTOM_PACKAGES"
+          FINAL_PACKAGES=$(echo "$FINAL_PACKAGES" | sed 's/^ *//;s/ *$//' | tr -s ' ')
+
+          echo "========================================"
+          echo "软件包处理完成"
+          echo "========================================"
+          echo "默认软件包：$DEFAULT_PACKAGE_COUNT"
+          echo "本地软件包：$LOCAL_PACKAGE_COUNT"
+          echo "Profile 已包含：$INCLUDED_PACKAGE_COUNT"
+          echo "额外加入：$ADDITIONAL_PACKAGE_COUNT"
+          echo "用户指定：${CUSTOM_PACKAGES:-无}"
+          echo "最终软件包参数：$FINAL_PACKAGES"
+          echo "========================================"
+
+          echo "PACKAGE_LIST=$FINAL_PACKAGES" >> "$GITHUB_ENV"
+
+      - name: 🏗️ 构建固件镜像
+        env:
+          PROFILE: ${{ matrix.profile }}
+          PACKAGE_LIST: ${{ env.PACKAGE_LIST }}
+          FILES_ARGUMENT: ${{ env.FILES_ARGUMENT }}
+        run: |
+          cd builder
+
+          # 关闭不需要的镜像产物
+          DISABLE_OPTS=(
+            "CONFIG_TARGET_ROOTFS_EXT4FS"
+            "CONFIG_TARGET_EXT4_[^ =]*"
+            "CONFIG_QCOW2_IMAGES"
+            "CONFIG_VDI_IMAGES"
+            "CONFIG_VHDX_IMAGES"
+          )
+          PATTERN=$(IFS='|'; echo "${DISABLE_OPTS[*]}")
+          sed -i -E "s/^(${PATTERN})=.*$/# \1 is not set/" .config
+
+          echo "========================================"
+          echo "开始构建固件"
+          echo "Profile：$PROFILE"
+          echo "========================================"
+
+          make image \
+            PROFILE="$PROFILE" \
+            PACKAGES="$PACKAGE_LIST" \
+            $FILES_ARGUMENT
+
+          echo "固件构建完成。"
+
+      - name: 📦 整理固件并计算校验和
+        env:
+          DEVICE: ${{ matrix.device }}
+          TARGET: ${{ matrix.target }}
+          SUBTARGET: ${{ matrix.subtarget }}
+        run: |
+          mkdir -p output_firmware
+
+          # 移动构建产物（glob 无匹配时由下方非空检查统一报错）
+          mv \
+            builder/bin/targets/"$TARGET"/"$SUBTARGET"/* \
+            output_firmware/ \
+            2>/dev/null || true
+
+          # 移除 rootfs 归档，只保留可刷写镜像
+          rm -f output_firmware/*.tar.xz
+
+          # 产物为空则直接失败，避免上传空 artifact、发布空 Release
+          if [ -z "$(ls -A output_firmware 2>/dev/null)" ]; then
+            echo "错误：未生成固件文件，请检查构建日志。"
+            exit 1
+          fi
+
+          cd output_firmware
+
+          # packages/ 等目录条目会被 sha256sum 跳过并提示，属正常现象
+          sha256sum * > sha256sums 2>/dev/null || true
+
+          # 精确到秒，避免同分钟重跑产生重复 tag
+          RELEASE_TAG="$(date +"%Y%m%d-%H%M%S")-$DEVICE"
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+
+          echo "========================================"
+          echo "固件输出完成"
+          echo "Release：$RELEASE_TAG"
+          echo "========================================"
+          ls -lh
+
+      - name: 📝 生成 Release 说明
+        env:
+          TARGET: ${{ matrix.target }}
+          SUBTARGET: ${{ matrix.subtarget }}
+        run: |
+          MANIFEST=$(ls output_firmware/*.manifest 2>/dev/null | head -n1)
+          LUCI_LIST=""
+          [ -n "$MANIFEST" ] && LUCI_LIST=$(grep -E '^luci-(app|theme)-' "$MANIFEST" | sed 's/ - .*//' | sort -u)
+
+          # 只匹配数字开头的内核目录（linux-5.4.231），排除平台目录（linux-rockchip_armv8）
+          KERNEL_VERSION=$(ls -d builder/build_dir/target-*/linux-*/linux-[0-9]* 2>/dev/null | sed -E 's/.*linux-([0-9.]+).*/\1/' | head -n1)
+          [ -n "$KERNEL_VERSION" ] || KERNEL_VERSION="未知"
+
+          {
+            echo "## 固件信息"
+            echo ""
+            echo "- 设备型号：${{ matrix.device }}（$TARGET/$SUBTARGET）"
+            echo "- 编译时间：$(date +"%Y-%m-%d %H:%M")"
+            echo "- 内核版本：$KERNEL_VERSION"
+            echo ""
+            echo "## 内置插件"
+            echo ""
+            if [ -n "$LUCI_LIST" ]; then
+              echo "$LUCI_LIST" | sed 's/^/- /'
+            else
+              echo "- （无）"
+            fi
+          } > RELEASE_BODY.md
+
+      - name: 📤 上传固件产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: 固件产物-${{ matrix.device }}
+          path: output_firmware/
+          retention-days: 7
+
+      - name: 🚀 发布固件到 GitHub Releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" \
+            --title "$RELEASE_TAG" \
+            --notes-file RELEASE_BODY.md \
+            output_firmware/*

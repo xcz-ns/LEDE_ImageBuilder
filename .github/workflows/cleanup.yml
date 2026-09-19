@@ -1,0 +1,134 @@
+name: 清理历史记录与 Release
+run-name: 清理历史（${{ github.event_name == 'workflow_dispatch' && '手动' || '自动' }}）
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    # 注意：workflows 匹配的是 build-image.yml 的 name 字段，不是文件名
+    workflows:
+      - 'OpenWrt 固件构建'
+    types:
+      - completed
+
+permissions:
+  actions: write
+  contents: write
+
+# 清理任务串行执行，避免与自动/手动触发互相干扰
+concurrency:
+  group: cleanup-history
+  cancel-in-progress: false
+
+jobs:
+
+  # ============================================================
+  # 历史清理
+  # ============================================================
+  cleanup:
+    name: 🧹 执行历史清理
+    runs-on: ubuntu-24.04
+    # 自动模式：仅当 build-image 成功或取消后执行（失败则不清理）
+    # 手动模式：始终执行
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       (github.event.workflow_run.conclusion == 'success' ||
+        github.event.workflow_run.conclusion == 'cancelled'))
+    env:
+      REPO: ${{ github.repository }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      IS_MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+    steps:
+
+      - name: 🗑️ 清理 build-image 运行记录（保留最新 3 个）
+        run: |
+          echo "========================================"
+          echo "清理 build-image 运行记录"
+          echo "模式：$([ "$IS_MANUAL" = "true" ] && echo 手动 || echo 自动)"
+          echo "========================================"
+
+          # 手动模式：额外删除全部失败的运行
+          if [ "$IS_MANUAL" = "true" ]; then
+            FAILED_IDS=$(
+              gh run list \
+                --repo "$REPO" \
+                --workflow build-image.yml \
+                --limit 100 \
+                --json databaseId,conclusion,createdAt \
+                -q 'sort_by(.createdAt) | reverse | .[] | select(.conclusion == "failure") | .databaseId'
+            )
+
+            for RUN_ID in $FAILED_IDS; do
+              echo "删除失败运行：$RUN_ID"
+              gh run delete "$RUN_ID" --repo "$REPO" || true
+            done
+          fi
+
+          # 按创建时间倒序，保留最新 3 次运行，删除更早的
+          OLD_IDS=$(
+            gh run list \
+              --repo "$REPO" \
+              --workflow build-image.yml \
+              --limit 100 \
+              --json databaseId,createdAt \
+              -q 'sort_by(.createdAt) | reverse | .[].databaseId' \
+              | tail -n +4
+          )
+
+          for RUN_ID in $OLD_IDS; do
+            echo "删除旧运行：$RUN_ID"
+            gh run delete "$RUN_ID" --repo "$REPO" || true
+          done
+
+      - name: 🏷️ 清理 Release（保留最新 3 个）
+        run: |
+          echo "========================================"
+          echo "清理 Release（保留最新 3 个）"
+          echo "========================================"
+
+          # 只处理固件 Release（tag 形如「日期-时间-设备名」），不动其他 Release
+          # 按创建时间倒序，保留最新 3 个固件 Release，删除更早的
+          # 无匹配时 grep 返回非 0，加 || true 避免 set -e 中止脚本
+          OLD_RELEASES=$(
+            gh release list \
+              --repo "$REPO" \
+              --limit 100 \
+              --json tagName,createdAt \
+              -q 'sort_by(.createdAt) | reverse | .[].tagName' \
+              | grep -E '^[0-9]{8}-[0-9]{4,6}-' \
+              | tail -n +4 || true
+          )
+
+          for TAG in $OLD_RELEASES; do
+            echo "删除旧 Release：$TAG"
+            gh release delete "$TAG" \
+              --repo "$REPO" \
+              --cleanup-tag \
+              --yes \
+              || true
+          done
+
+      - name: 🧹 清理本工作流运行记录（保留 0 个）
+        run: |
+          echo "========================================"
+          echo "清理本工作流运行记录（保留 0 个）"
+          echo "========================================"
+
+          # 无其他运行时 grep 无输出返回非 0，加 || true 避免 set -e 中止脚本
+          # 注意：若本文件另存为其他文件名，请同步修改 --workflow 参数
+          CURRENT_RUN_ID="${{ github.run_id }}"
+
+          SELF_IDS=$(
+            gh run list \
+              --repo "$REPO" \
+              --workflow cleanup.yml \
+              --limit 100 \
+              --json databaseId,createdAt \
+              -q 'sort_by(.createdAt) | reverse | .[].databaseId' \
+              | grep -v "^${CURRENT_RUN_ID}$" || true
+          )
+
+          for RUN_ID in $SELF_IDS; do
+            echo "删除本工作流旧运行：$RUN_ID"
+            gh run delete "$RUN_ID" --repo "$REPO" || true
+          done
