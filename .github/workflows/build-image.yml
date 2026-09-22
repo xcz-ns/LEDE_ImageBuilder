@@ -60,8 +60,8 @@ jobs:
             }
           ]'
 
-          # 选择"all"时返回所有设备，否则按设备名筛选
-          if [ "$DEVICE" = "all" ]; then
+          # 选择"ALL"时返回所有设备，否则按设备名筛选
+          if [ "$DEVICE" = "ALL" ]; then
             MATRIX=$(echo "$DEVICE_CONFIG" | jq -c '.')
             echo "已选择全部设备，共 $(echo "$MATRIX" | jq 'length') 个设备将串行构建。"
           else
