@@ -1,0 +1,41 @@
+# ImageBuilder 构建产物
+builder/
+output_firmware/
+imagebuilder.tar.xz
+
+# 固件镜像文件
+*.img
+*.bin
+*.sysupgrade
+*.factory
+*.rootfs*
+*.manifest
+sha256sums
+
+# 压缩包
+*.tar
+*.tar.gz
+*.tar.xz
+*.tar.bz2
+*.zip
+
+# 临时文件
+*.tmp
+*.temp
+*.log
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Release 说明（构建时生成）
+RELEASE_BODY.md
