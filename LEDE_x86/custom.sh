@@ -3,8 +3,8 @@
 cd ..
 
 # 全局路径与架构定义
-BIN_DIR="$DEVICE/openwrt/files/usr/bin"
-CORE_DIR="$DEVICE/openwrt/files/etc/openclash/core"
+BIN_DIR="$DEVICE/files/usr/bin"
+CORE_DIR="$DEVICE/files/etc/openclash/core"
 ARCH_AMD64="amd64"
 ARCH_X86_64="x86_64"
 
