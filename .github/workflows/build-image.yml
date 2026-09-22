@@ -14,10 +14,10 @@ on:
           - 'LEDE_Cudy'
           - 'LEDE_R3S'
           - 'LEDE_x86'
-          - '全部设备'
+          - 'all'
 
 # 同一构建组串行执行：避免同分钟重跑导致 Release tag 冲突或误删
-# 选择"全部设备"时，多设备共享同一组串行构建
+# 选择"all"时，多设备共享同一组串行构建
 concurrency:
   group: build-${{ inputs.selected_device }}
   cancel-in-progress: false
@@ -60,8 +60,8 @@ jobs:
             }
           ]'
 
-          # 选择"全部设备"时返回所有设备，否则按设备名筛选
-          if [ "$DEVICE" = "全部设备" ]; then
+          # 选择"all"时返回所有设备，否则按设备名筛选
+          if [ "$DEVICE" = "all" ]; then
             MATRIX=$(echo "$DEVICE_CONFIG" | jq -c '.')
             echo "已选择全部设备，共 $(echo "$MATRIX" | jq 'length') 个设备将串行构建。"
           else
@@ -111,8 +111,7 @@ jobs:
             qemu-utils \
             unzip
 
-      - name: 🔍 查找 ImageBuilder Release
-        id: find-release
+      - name: ⬇️ 下载 ImageBuilder
         env:
           DEVICE: ${{ matrix.device }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -139,43 +138,29 @@ jobs:
           fi
 
           echo "Release：$TAG_NAME"
-          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "开始下载 ImageBuilder..."
 
-      - name: 💾 缓存 ImageBuilder
-        uses: actions/cache@v4
-        with:
-          path: imagebuilder.tar.xz
-          key: imagebuilder-${{ steps.find-release.outputs.tag_name }}
+          gh release download "$TAG_NAME" \
+            --repo xcz-ns/LEDE \
+            --pattern 'openwrt-imagebuilder*.tar.xz' \
+            --dir .
 
-      - name: ⬇️ 下载并解压 ImageBuilder
-        env:
-          DEVICE: ${{ matrix.device }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ steps.find-release.outputs.tag_name }}
-        run: |
-          if [ -f imagebuilder.tar.xz ]; then
-            echo "✅ 命中缓存，跳过下载。"
-          else
-            echo "未命中缓存，开始下载 ImageBuilder..."
-            gh release download "$TAG_NAME" \
-              --repo xcz-ns/LEDE \
-              --pattern 'openwrt-imagebuilder*.tar.xz' \
-              --dir .
+          BUILDER_ARCHIVE=$(ls openwrt-imagebuilder*.tar.xz 2>/dev/null | head -n 1)
 
-            BUILDER_ARCHIVE=$(ls openwrt-imagebuilder*.tar.xz 2>/dev/null | head -n 1)
-            if [ -z "$BUILDER_ARCHIVE" ]; then
-              echo "错误：Release $TAG_NAME 中未找到 ImageBuilder。"
-              exit 1
-            fi
-            mv "$BUILDER_ARCHIVE" imagebuilder.tar.xz
+          if [ -z "$BUILDER_ARCHIVE" ]; then
+            echo "错误：Release $TAG_NAME 中未找到 ImageBuilder。"
+            exit 1
           fi
 
-          echo "ImageBuilder 文件大小：$(du -h imagebuilder.tar.xz | cut -f1)"
+          mv "$BUILDER_ARCHIVE" imagebuilder.tar.xz
+          echo "ImageBuilder 下载完成，文件大小：$(du -h imagebuilder.tar.xz | cut -f1)"
+
           echo "正在解压 ImageBuilder..."
           mkdir -p builder
           tar -xJf imagebuilder.tar.xz \
             -C builder \
             --strip-components=1
+
           echo "ImageBuilder 准备完成。"
 
       - name: 📂 加载设备配置与自定义软件包
@@ -460,29 +445,3 @@ jobs:
             --title "$RELEASE_TAG" \
             --notes-file RELEASE_BODY.md \
             output_firmware/*
-
-      - name: ❌ 构建失败通知
-        if: failure()
-        env:
-          DEVICE: ${{ matrix.device }}
-          NOTIFY_WEBHOOK: ${{ secrets.NOTIFY_WEBHOOK }}
-        run: |
-          echo "========================================"
-          echo "❌ 固件构建失败"
-          echo "设备：$DEVICE"
-          echo "仓库：${{ github.repository }}"
-          echo "Run ID：${{ github.run_id }}"
-          echo "日志地址：https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo "========================================"
-
-          # 如需推送通知（Telegram / 企业微信 / 钉钉等），
-          # 在 GitHub Secrets 中配置 NOTIFY_WEBHOOK 为你的 webhook 地址即可。
-          if [ -n "$NOTIFY_WEBHOOK" ]; then
-            curl -s -X POST "$NOTIFY_WEBHOOK" \
-              -H "Content-Type: application/json" \
-              -d "{\"msg\":\"❌ 固件构建失败\",\"device\":\"$DEVICE\",\"repo\":\"${{ github.repository }}\",\"run_id\":\"${{ github.run_id }}\",\"log\":\"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}" \
-              || echo "通知发送失败，请检查 NOTIFY_WEBHOOK 配置。"
-          else
-            echo "未配置 NOTIFY_WEBHOOK，跳过推送通知。"
-            echo "提示：在 GitHub Secrets 中添加 NOTIFY_WEBHOOK 即可接收失败通知。"
-          fi
