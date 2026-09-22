@@ -40,7 +40,7 @@ jobs:
       IS_MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
     steps:
 
-      - name: 🗑️ 清理 build-image 运行记录（保留最新 3 个）
+      - name: 🗑️ 清理 build-image 运行记录（保留最新 2 个）
         run: |
           echo "========================================"
           echo "清理 build-image 运行记录"
@@ -64,7 +64,7 @@ jobs:
             done
           fi
 
-          # 按创建时间倒序，保留最新 3 次运行，删除更早的
+          # 按创建时间倒序，保留最新 2 次运行，删除更早的
           OLD_IDS=$(
             gh run list \
               --repo "$REPO" \
@@ -72,7 +72,7 @@ jobs:
               --limit 100 \
               --json databaseId,createdAt \
               -q 'sort_by(.createdAt) | reverse | .[].databaseId' \
-              | tail -n +4
+              | tail -n +3
           )
 
           for RUN_ID in $OLD_IDS; do
@@ -80,17 +80,17 @@ jobs:
             gh run delete "$RUN_ID" --repo "$REPO" || true
           done
 
-      - name: 🏷️ 清理 Release（按设备各保留最新 3 个）
+      - name: 🏷️ 清理 Release（按设备各保留最新 2 个）
         run: |
           echo "========================================"
-          echo "清理 Release（按设备各保留最新 3 个）"
+          echo "清理 Release（按设备各保留最新 2 个）"
           echo "========================================"
 
           # 设备列表（需与 build-image.yml 中的设备保持一致）
           DEVICES="LEDE_Cudy LEDE_R3S LEDE_x86"
 
           # tag 格式：YYYYMMDD-HHMMSS-设备名
-          # 按设备分别筛选，每个设备保留最新 3 个，删除更早的
+          # 按设备分别筛选，每个设备保留最新 2 个，删除更早的
           for DEVICE in $DEVICES; do
             echo "--- 处理设备：$DEVICE ---"
 
@@ -101,7 +101,7 @@ jobs:
                 --json tagName,createdAt \
                 -q 'sort_by(.createdAt) | reverse | .[].tagName' \
                 | grep -E "^[0-9]{8}-[0-9]{4,6}-${DEVICE}$" \
-                | tail -n +4 || true
+                | tail -n +3 || true
             )
 
             if [ -z "$OLD_RELEASES" ]; then
