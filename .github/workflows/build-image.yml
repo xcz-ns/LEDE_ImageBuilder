@@ -14,7 +14,7 @@ on:
           - 'LEDE_Cudy'
           - 'LEDE_R3S'
           - 'LEDE_x86'
-          - 'all'
+          - 'ALL'
 
 # 同一构建组串行执行：避免同分钟重跑导致 Release tag 冲突或误删
 # 选择"all"时，多设备共享同一组串行构建
