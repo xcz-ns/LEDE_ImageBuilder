@@ -32,12 +32,12 @@
 1. 进入仓库的 **Actions** 页面
 2. 选择 **OpenWrt 固件构建** 工作流
 3. 点击 **Run workflow**
-4. 选择要构建的设备（可选单个设备或「全部设备」）
+4. 选择要构建的设备（可选单个设备或 `all`）
 5. 等待构建完成，固件会自动发布到 **Releases**
 
 ### 全部设备构建
 
-选择「全部设备」时，三个设备会在同一 concurrency 组中**串行构建**，避免 Release tag 冲突。每个设备构建完成后独立发布 Release。
+选择 `all` 时，三个设备会在同一 concurrency 组中**串行构建**，避免 Release tag 冲突。每个设备构建完成后独立发布 Release。
 
 ## 自定义配置
 
@@ -62,34 +62,11 @@
 
 **注意**：下载的文件必须放到 `$DEVICE/files/` 目录下，才会被打包进固件。
 
-## 构建缓存
-
-ImageBuilder 归档文件（`imagebuilder.tar.xz`）会按 Release tag 缓存。同一 Release 重复构建时直接命中缓存，跳过下载步骤，显著缩短构建时间。
-
-## 失败通知
-
-构建失败时会在日志中输出失败详情。如需推送通知（Telegram / 企业微信 / 钉钉等）：
-
-1. 进入仓库 **Settings → Secrets and variables → Actions**
-2. 新建 Repository secret，名称为 `NOTIFY_WEBHOOK`
-3. 值为你的 webhook 地址（需支持 POST JSON）
-
-通知 payload 格式：
-```json
-{
-  "msg": "❌ 固件构建失败",
-  "device": "LEDE_Cudy",
-  "repo": "xcz-ns/LEDE_ImageBuilder",
-  "run_id": "1234567890",
-  "log": "https://github.com/..."
-}
-```
-
 ## 历史清理
 
 `cleanup.yml` 工作流会在每次构建完成后自动触发（也可手动触发）：
-- 每个设备各自保留最新 **3** 个 Release，更早的自动删除
-- 保留最新 **3** 条 build-image 运行记录
+- 每个设备各自保留最新 **2** 个 Release，更早的自动删除
+- 保留最新 **2** 条 build-image 运行记录
 - 手动触发时额外删除全部失败的运行记录
 - cleanup 自身的运行记录不保留
 
