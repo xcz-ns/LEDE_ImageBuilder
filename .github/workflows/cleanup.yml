@@ -80,32 +80,43 @@ jobs:
             gh run delete "$RUN_ID" --repo "$REPO" || true
           done
 
-      - name: 🏷️ 清理 Release（保留最新 3 个）
+      - name: 🏷️ 清理 Release（按设备各保留最新 3 个）
         run: |
           echo "========================================"
-          echo "清理 Release（保留最新 3 个）"
+          echo "清理 Release（按设备各保留最新 3 个）"
           echo "========================================"
 
-          # 只处理固件 Release（tag 形如「日期-时间-设备名」），不动其他 Release
-          # 按创建时间倒序，保留最新 3 个固件 Release，删除更早的
-          # 无匹配时 grep 返回非 0，加 || true 避免 set -e 中止脚本
-          OLD_RELEASES=$(
-            gh release list \
-              --repo "$REPO" \
-              --limit 100 \
-              --json tagName,createdAt \
-              -q 'sort_by(.createdAt) | reverse | .[].tagName' \
-              | grep -E '^[0-9]{8}-[0-9]{4,6}-' \
-              | tail -n +4 || true
-          )
+          # 设备列表（需与 build-image.yml 中的设备保持一致）
+          DEVICES="LEDE_Cudy LEDE_R3S LEDE_x86"
 
-          for TAG in $OLD_RELEASES; do
-            echo "删除旧 Release：$TAG"
-            gh release delete "$TAG" \
-              --repo "$REPO" \
-              --cleanup-tag \
-              --yes \
-              || true
+          # tag 格式：YYYYMMDD-HHMMSS-设备名
+          # 按设备分别筛选，每个设备保留最新 3 个，删除更早的
+          for DEVICE in $DEVICES; do
+            echo "--- 处理设备：$DEVICE ---"
+
+            OLD_RELEASES=$(
+              gh release list \
+                --repo "$REPO" \
+                --limit 100 \
+                --json tagName,createdAt \
+                -q 'sort_by(.createdAt) | reverse | .[].tagName' \
+                | grep -E "^[0-9]{8}-[0-9]{4,6}-${DEVICE}$" \
+                | tail -n +4 || true
+            )
+
+            if [ -z "$OLD_RELEASES" ]; then
+              echo "  无需清理的旧 Release。"
+              continue
+            fi
+
+            for TAG in $OLD_RELEASES; do
+              echo "  删除旧 Release：$TAG"
+              gh release delete "$TAG" \
+                --repo "$REPO" \
+                --cleanup-tag \
+                --yes \
+                || true
+            done
           done
 
       - name: 🧹 清理本工作流运行记录（保留 0 个）
