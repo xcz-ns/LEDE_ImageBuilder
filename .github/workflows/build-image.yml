@@ -168,6 +168,16 @@ jobs:
           DEVICE: ${{ matrix.device }}
         run: |
           cd builder
+          
+          echo "精简 target.mk 默认预装包..."
+          sed -i \
+            -e 's|ddns-scripts_aliyun ddns-scripts_dnspod luci-app-ddns luci-app-upnp luci-app-autoreboot|luci-app-upnp luci-app-autoreboot|' \
+            -e 's|luci-app-arpbind luci-app-filetransfer luci-app-vsftpd luci-app-ssr-plus luci-app-vlmcsd|luci-app-filetransfer|' \
+            -e 's|luci-app-accesscontrol luci-app-nlbwmon luci-app-turboacc luci-app-wol|luci-app-turboacc|' \
+            include/target.mk
+          echo "修改完成，当前默认 luci-app 包"
+          grep -A6 "DEFAULT_PACKAGES.router" include/target.mk | grep -o "luci-app-[a-z]*"
+          
           echo "正在加载 $DEVICE 自定义配置..."
 
           # 加载本地软件包

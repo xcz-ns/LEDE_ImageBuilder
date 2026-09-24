@@ -9,19 +9,6 @@
 -kmod-i40evf
 -kmod-usb-net-rtl8152-vendor
 -procd-seccomp
--ddns-scripts_aliyun
--ddns-scripts_dnspod
--luci-app-accesscontrol
--luci-app-arpbind
--luci-app-autoreboot
--luci-app-ddns
--luci-app-nlbwmon
--luci-app-qbittorrent
--luci-app-qbittorrent_dynamic
--luci-app-ssr-plus
--luci-app-vlmcsd
--luci-app-vsftpd
--luci-app-wol
 -kmod-r8125-rss
 -strace
 
