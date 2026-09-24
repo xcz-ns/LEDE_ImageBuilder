@@ -1,3 +1,1 @@
--autosamba
--samba36-server
 -procd-seccomp

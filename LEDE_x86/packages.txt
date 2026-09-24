@@ -1,3 +1,4 @@
+-kmod-i40evf
 -kmod-sound-hda-codec-hdmi
 -kmod-sound-hda-codec-realtek
 -kmod-sound-hda-codec-via
@@ -6,9 +7,5 @@
 -kmod-sound-i8x0
 -kmod-sound-via82xx
 -kmod-usb-audio
--kmod-i40evf
 -kmod-usb-net-rtl8152-vendor
 -procd-seccomp
--kmod-r8125-rss
--strace
-
