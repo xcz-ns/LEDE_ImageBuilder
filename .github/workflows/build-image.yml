@@ -227,22 +227,27 @@ jobs:
           echo "========================================"
 
           # ----------------------------------------------------
-          # 处理软件包签名校验
+          # 处理软件包签名密钥与本地索引
           # ----------------------------------------------------
-          echo "正在调整软件包签名校验..."
-
-          # 尝试生成索引（失败可容忍：随后会创建空的签名文件）
-          make package_index >/dev/null 2>&1 || true
-
-          if [ ! -f "packages/Packages.sig" ]; then
-            touch packages/Packages.sig
-            echo "已创建空的 Packages.sig。"
+          echo "正在生成本地构建签名密钥..."
+          USIGN_BIN="staging_dir/host/bin/usign"
+          
+          # 1. 确保 usign 可执行文件存在，并生成本地密钥对
+          if [ -x "$USIGN_BIN" ]; then
+            $USIGN_BIN -G -s key-build -p key-build.pub -c "Local build key"
+            
+            # 2. 将公钥以其指纹命名放入 keys/ 受信任目录
+            mkdir -p keys
+            PUB_FINGERPRINT=$($USIGN_BIN -F -p key-build.pub)
+            cp key-build.pub "keys/$PUB_FINGERPRINT"
+            echo "已成功导入本地受信任公钥: $PUB_FINGERPRINT"
+          else
+            echo "错误: 未找到 $USIGN_BIN，无法生成签名密钥！" >&2
+            exit 1
           fi
 
-          # 关闭签名校验（配置文件缺失或修改失败时直接报错）
-          sed -i \
-            's/option check_signature/option dummy_signature/g' \
-            repositories.conf
+          # 3. 生成软件包索引及合法签名文件
+          make package_index
 
           # ----------------------------------------------------
           # 获取 Profile 默认软件包
